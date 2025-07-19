@@ -1,25 +1,58 @@
 import { NextRequest } from "next/server";
+import { z } from "zod";
+
+type RegularHandler = (
+  input: any,
+  context: { req: NextRequest; params?: any }
+) => any;
+
+type SchemaHandler = {
+  schema: z.ZodSchema;
+  handler: (input: any, context: { req: NextRequest; params?: any }) => any;
+  __isSchemaHandler: true;
+};
+
+type Handler = RegularHandler | SchemaHandler;
 
 type RouteHandlerWithMetadata<T> = T & {
   __handler: T;
 };
 
-type RoutesWithHandlers<THandlers extends Record<string, any>> = {
+type RoutesWithHandlers<THandlers extends Record<string, Handler>> = {
   [K in keyof THandlers]: RouteHandlerWithMetadata<THandlers[K]>;
 } & {
   __handlers: THandlers;
 };
 
-export function createApiHandler<
-  THandlers extends Record<string, (input: any, context: any) => any>
->(
+// Helper function to create a handler with schema validation
+export function withSchema<TSchema extends z.ZodSchema, TOutput>(
+  schema: TSchema,
+  handler: (
+    input: z.infer<TSchema>,
+    context: { req: NextRequest; params?: any }
+  ) => TOutput
+): {
+  schema: TSchema;
+  handler: typeof handler;
+  __isSchemaHandler: true;
+  __inferredOutput: TOutput;
+} {
+  return {
+    schema,
+    handler,
+    __isSchemaHandler: true as const,
+    __inferredOutput: undefined as any as TOutput,
+  };
+}
+
+export function createApiHandler<THandlers extends Record<string, Handler>>(
   handlers: THandlers
 ): RoutesWithHandlers<THandlers> {
   const createMethod = (method: keyof THandlers) => {
     return async (req: NextRequest, context?: { params: any }) => {
-      const handler = handlers[method];
+      const handlerDef = handlers[method];
 
-      if (!handler) {
+      if (!handlerDef) {
         return Response.json(
           { error: `Method ${String(method)} not allowed` },
           { status: 405 }
@@ -27,19 +60,49 @@ export function createApiHandler<
       }
 
       try {
-        let input: any;
+        let rawInput: any;
         if (method === "GET" || method === "DELETE") {
           const url = new URL(req.url);
           const queryParams = Object.fromEntries(url.searchParams.entries());
-          input = { ...queryParams, ...context?.params };
+          rawInput = { ...queryParams, ...context?.params };
         } else {
           const body = await req.json().catch(() => ({}));
-          input = { ...body, ...context?.params };
+          rawInput = { ...body, ...context?.params };
         }
 
-        const result = await handler(input, { req, params: context?.params });
+        // Check if this is a handler with schema
+        if (
+          typeof handlerDef === "object" &&
+          handlerDef !== null &&
+          "__isSchemaHandler" in handlerDef
+        ) {
+          // Validate input with Zod schema
+          const schemaHandler = handlerDef as SchemaHandler;
+          const validationResult = schemaHandler.schema.safeParse(rawInput);
 
-        return Response.json(result, { status: 200 });
+          if (!validationResult.success) {
+            return Response.json(
+              {
+                error: "Validation failed",
+                details: validationResult.error.issues,
+              },
+              { status: 400 }
+            );
+          }
+
+          const result = await schemaHandler.handler(validationResult.data, {
+            req,
+            params: context?.params,
+          });
+          return Response.json(result, { status: 200 });
+        } else {
+          // Regular handler function
+          const result = await (handlerDef as RegularHandler)(rawInput, {
+            req,
+            params: context?.params,
+          });
+          return Response.json(result, { status: 200 });
+        }
       } catch (error) {
         console.error("API Error:", error);
         return Response.json(
@@ -74,21 +137,29 @@ export type ExtractHandlers<T> = {
 };
 
 export type InferInput<T> = T extends { __handler: infer Handler }
-  ? Handler extends (input: infer I, context: any) => any
-    ? I
+  ? InferHandlerInput<Handler>
+  : InferHandlerInput<T>;
+
+type InferHandlerInput<Handler> = Handler extends { schema: infer Schema }
+  ? Schema extends z.ZodSchema
+    ? z.infer<Schema>
     : never
-  : T extends (input: infer I, context: any) => any
+  : Handler extends (input: infer I, context: any) => any
   ? I
   : never;
 
 export type InferOutput<T> = T extends { __handler: infer Handler }
-  ? Handler extends (input: any, context: any) => Promise<infer O>
+  ? InferHandlerOutput<Handler>
+  : InferHandlerOutput<T>;
+
+type InferHandlerOutput<Handler> = Handler extends { handler: infer HandlerFn }
+  ? HandlerFn extends (...args: any[]) => Promise<infer O>
     ? O
-    : Handler extends (input: any, context: any) => infer O
+    : HandlerFn extends (...args: any[]) => infer O
     ? O
     : never
-  : T extends (input: any, context: any) => Promise<infer O>
+  : Handler extends (...args: any[]) => Promise<infer O>
   ? O
-  : T extends (input: any, context: any) => infer O
+  : Handler extends (...args: any[]) => infer O
   ? O
   : never;
