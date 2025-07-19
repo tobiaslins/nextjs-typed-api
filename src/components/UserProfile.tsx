@@ -18,11 +18,12 @@ export function UserProfile({ userId }: { userId: string }) {
 
   const handleUpdate = async () => {
     // TypeScript validates this input matches the PUT handler type!
-    await updateUser({
+    const res = await updateUser({
       id: userId,
       name: "New Name",
       email: "new@example.com",
     });
+    console.log(res);
   };
 
   if (isLoading) return <div>Loading...</div>;

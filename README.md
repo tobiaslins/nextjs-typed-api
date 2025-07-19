@@ -6,6 +6,7 @@ A fully type-safe API client for Next.js applications that eliminates the need f
 
 - ✨ **Zero Codegen**: No build step or code generation required
 - 🔒 **Full Type Safety**: Input validation and output types automatically inferred
+- 🛡️ **Runtime Validation**: Optional Zod schema validation for robust input checking
 - 🚀 **Dynamic Routes**: Support for parameterized routes like `/api/users/[id]`
 - 🎯 **SWR Integration**: Built-in caching and data fetching with SWR
 - 📝 **Autocomplete**: Rich IDE support with IntelliSense
@@ -15,7 +16,9 @@ A fully type-safe API client for Next.js applications that eliminates the need f
 
 ### 1. Create API Routes
 
-Define your API handlers using the `createApiHandler` helper:
+Define your API handlers using the `createApiHandler` helper. You can use either simple TypeScript types or Zod schemas for validation:
+
+#### Basic TypeScript Types
 
 ```typescript
 // src/app/api/users/route.ts
@@ -40,6 +43,53 @@ export const { GET, POST } = createApiHandler({
       createdAt: new Date().toISOString()
     };
   }
+});
+```
+
+#### With Zod Schema Validation
+
+For runtime validation and better error handling, use the `withSchema` helper:
+
+```typescript
+// src/app/api/users/route.ts
+import { createApiHandler, withSchema } from '../../../../lib/api-builder';
+import { z } from 'zod';
+
+const getUsersSchema = z.object({
+  limit: z.string().optional().default("10"),
+  offset: z.string().optional().default("0"),
+});
+
+const createUserSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  email: z.string().email("Invalid email format"),
+});
+
+export const { GET, POST } = createApiHandler({
+  GET: withSchema(getUsersSchema, async (input) => {
+    const limit = parseInt(input.limit);
+    const offset = parseInt(input.offset);
+    
+    return {
+      users: [
+        { id: '1', name: 'John', email: 'john@example.com' },
+        { id: '2', name: 'Jane', email: 'jane@example.com' }
+      ],
+      total: 2,
+      limit,
+      offset
+    };
+  }),
+
+  POST: withSchema(createUserSchema, async (input) => {
+    // Input is automatically validated and typed!
+    return {
+      id: Math.random().toString(),
+      name: input.name,
+      email: input.email,
+      createdAt: new Date().toISOString()
+    };
+  })
 });
 ```
 
@@ -112,7 +162,9 @@ export function UserList() {
 
 ## Dynamic Routes
 
-The library automatically handles dynamic route parameters:
+The library automatically handles dynamic route parameters. You can use either basic types or Zod schemas:
+
+#### Basic Dynamic Routes
 
 ```typescript
 // src/app/api/users/[id]/route.ts
@@ -135,6 +187,44 @@ export const { GET, PUT, DELETE } = createApiHandler({
 });
 ```
 
+#### Dynamic Routes with Zod Validation
+
+```typescript
+// src/app/api/users/[id]/route.ts
+import { createApiHandler, withSchema } from '../../../../../lib/api-builder';
+import { z } from 'zod';
+
+const getUserSchema = z.object({
+  id: z.string().uuid("Invalid user ID format"),
+});
+
+const updateUserSchema = z.object({
+  id: z.string().uuid("Invalid user ID format"),
+  name: z.string().min(1).optional(),
+  email: z.string().email().optional(),
+});
+
+export const { GET, PUT, DELETE } = createApiHandler({
+  GET: withSchema(getUserSchema, async (input) => {
+    // id is validated as UUID
+    return {
+      id: input.id,
+      name: 'John Doe',
+      email: 'john@example.com'
+    };
+  }),
+
+  PUT: withSchema(updateUserSchema, async (input) => {
+    // All fields are validated
+    return {
+      id: input.id,
+      name: input.name || 'John Doe',
+      email: input.email || 'john@example.com'
+    };
+  })
+});
+```
+
 ```typescript
 // In your component
 const { data: user } = api.useQuery("/api/users/[id]", {
@@ -147,6 +237,61 @@ await updateUser({
   id: userId,       // Used for URL parameter
   name: "New Name", // Sent in request body
   email: "new@example.com"
+});
+```
+
+## Runtime Validation with Zod
+
+When using `withSchema`, your API routes automatically handle validation and return appropriate error responses:
+
+### Validation Benefits
+
+- **Automatic Error Responses**: Invalid input returns structured 400 errors
+- **Type Safety**: Input is automatically typed based on your schema
+- **Rich Validation**: Use Zod's full validation features (email, UUID, custom validators, etc.)
+- **Error Details**: Detailed validation error information for debugging
+
+### Error Response Format
+
+When validation fails, the API automatically returns:
+
+```json
+{
+  "error": "Validation failed",
+  "details": [
+    {
+      "path": ["email"],
+      "message": "Invalid email format"
+    }
+  ]
+}
+```
+
+### Advanced Zod Usage
+
+```typescript
+import { z } from 'zod';
+
+const complexSchema = z.object({
+  user: z.object({
+    name: z.string().min(2, "Name must be at least 2 characters"),
+    age: z.number().int().min(18, "Must be 18 or older"),
+    email: z.string().email("Invalid email"),
+    role: z.enum(["user", "admin", "moderator"]),
+  }),
+  preferences: z.object({
+    notifications: z.boolean().default(true),
+    theme: z.enum(["light", "dark"]).default("light"),
+  }).optional(),
+  tags: z.array(z.string()).max(5, "Maximum 5 tags allowed"),
+});
+
+export const { POST } = createApiHandler({
+  POST: withSchema(complexSchema, async (input) => {
+    // input is fully typed and validated!
+    const { user, preferences, tags } = input;
+    return { success: true, userId: "123" };
+  })
 });
 ```
 
@@ -182,6 +327,25 @@ await trigger(input, {
   optimisticData?: T,        // Optimistic update data
   rollbackOnError?: boolean, // Rollback on error (default: true)
   revalidate?: boolean       // Revalidate cache (default: true)
+});
+```
+
+### `withSchema`
+
+Add Zod validation to your API handlers:
+
+```typescript
+import { withSchema } from '../lib/api-builder';
+import { z } from 'zod';
+
+const mySchema = z.object({
+  name: z.string(),
+  email: z.string().email(),
+});
+
+const handler = withSchema(mySchema, async (input) => {
+  // input is validated and typed
+  return { success: true };
 });
 ```
 
